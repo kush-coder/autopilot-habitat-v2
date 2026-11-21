@@ -1,0 +1,171 @@
+syntax = "proto2";
+package sup.ctl;
+
+import "types.proto";
+
+// Networked progress bar for displaying a remote request's operation status over time.
+message NetProgress {
+  // Number of total units until bar is complete.
+  required uint64 total = 1;
+  // Number of total units processed thus far.
+  required uint64 position = 2;
+}
+
+// Client to server request for authenticating a client connection. This is the first message a
+// SrvProtocol client will make to a SrvProtocol server.
+//
+// If the `secret_key` provided matches with what the server has then the client may continue
+// sending requests. Connections will be aborted by the server if there is no match.
+message Handshake {
+  // A shared secret between the destination server and the calling client.
+  optional string secret_key = 1;
+}
+
+// Wrapper type for a list of ServiceBinds.
+message ServiceBindList {
+  repeated sup.types.ServiceBind binds = 1;
+}
+
+message SupDepart {
+  optional string member_id = 1;
+}
+
+message SupRestart {}
+
+message SvcFilePut {
+  optional sup.types.ServiceGroup service_group = 1;
+  optional bytes content = 2; // TODO: Make this a string
+  optional string filename = 3;
+  optional uint64 version = 4;
+  optional bool is_encrypted = 5 [default = false];
+}
+
+// Request for retrieving the default configuration for a given service.
+message SvcGetDefaultCfg {
+  // Package identifier to target running service.
+  optional sup.types.PackageIdent ident = 1;
+}
+
+message SvcValidateCfg {
+  // Service group of a running service to validate a configuration change against.
+  optional sup.types.ServiceGroup service_group = 1;
+  // Structured and self-describing string format contained in the configuration string.
+  optional sup.types.ServiceCfg.Format format = 2 [default = Toml];
+  // Unencrypted configuration to validate.
+  optional bytes cfg = 3;
+}
+
+// Request to set a running service's configuration to the given values.
+message SvcSetCfg {
+  // Service group of a running service to set a new configuration for.
+  optional sup.types.ServiceGroup service_group = 1;
+  // Encrypted configuration to set.
+  optional bytes cfg = 2; // TODO: Make this a string
+  // Incarnation of this configuration.
+  optional uint64 version = 3;
+  // If the payload in `cfg` is encrypted with the remote Supervisor's Ring Key.
+  optional bool is_encrypted = 4 [default = false];
+}
+
+// Request to load a new service.
+message SvcLoad {
+  reserved 5;
+  reserved "specified_binds";
+
+  // Package identifier for the service to load. Using a more qualified identifier will load a
+  // more specific package.
+  optional sup.types.PackageIdent ident = 1;
+  // List of service binds to use when configuring the service.
+  optional ServiceBindList binds = 3;
+  // Indicate how bind availability affects service start-up
+  optional sup.types.BindingMode binding_mode = 14;
+  // Remote http URL for the Builder service to receive package updates from.
+  optional string bldr_url = 6;
+  // Remote channel on the Builder service to receive package updates from.
+  optional string bldr_channel = 7;
+  // A filepath on disk which can be specified to override the package's configuration and hooks.
+  // This is useful when testing services on a local Supervisor before packaging them.
+  optional string config_from = 8;
+  // If set to true, any loaded service matching this request's package ident will be unloaded
+  // and this request's will replace it.
+  optional bool force = 9 [default = false];
+  // Service group name for the service.
+  optional string group = 10 [default = "default"];
+  // Encrypted password for a Windows service.
+  optional string svc_encrypted_password = 11;
+  // Topology which the service will run in.
+  optional sup.types.Topology topology = 12;
+  // Update strategy for the service.
+  optional sup.types.UpdateStrategy update_strategy = 13;
+  // Health Check interval for the service
+  optional sup.types.HealthCheckInterval health_check_interval = 15;
+  // The shutdown timeout for the service.
+  optional uint32 shutdown_timeout = 16;
+  // Update condition for the service.
+  optional sup.types.UpdateCondition update_condition = 17;
+}
+
+message SvcUpdate {
+  // Package identifier for the service to update. Must match the
+  // ident the service was started with.
+  optional sup.types.PackageIdent ident = 1;
+  // List of service binds to use when configuring the service.
+  optional ServiceBindList binds = 2;
+  // Indicate how bind availability affects service start-up
+  optional sup.types.BindingMode binding_mode = 3;
+  // Remote http URL for the Builder service to receive package updates from.
+  optional string bldr_url = 4;
+  // Remote channel on the Builder service to receive package updates from.
+  optional string bldr_channel = 5;
+  // Service group name for the service.
+  optional string group = 6;
+  // Encrypted password for a Windows service.
+  optional string svc_encrypted_password = 7;
+  // Topology which the service will run in.
+  optional sup.types.Topology topology = 8;
+  // Update strategy for the service.
+  optional sup.types.UpdateStrategy update_strategy = 9;
+  // Health Check interval for the service
+  optional sup.types.HealthCheckInterval health_check_interval = 10;
+  // The shutdown timeout for the service.
+  optional uint32 shutdown_timeout = 11;
+  // Update condition for the service.
+  optional sup.types.UpdateCondition update_condition = 12;
+}
+
+// Request to unload a loaded service.
+message SvcUnload {
+  reserved 2;
+  reserved "signal";
+  optional sup.types.PackageIdent ident = 1;
+  // Timeout in seconds before killing the service
+  optional uint32 timeout_in_seconds = 3;
+}
+
+// Request to start a loaded and stopped service.
+message SvcStart {
+  optional sup.types.PackageIdent ident = 1;
+}
+
+// Request to stop a loaded and started service.
+message SvcStop {
+  reserved 2;
+  reserved "signal";
+  optional sup.types.PackageIdent ident = 1;
+  // Timeout in seconds before killing the service
+  optional uint32 timeout_in_seconds = 3;
+}
+
+// Request to retrieve the service status of one or all services.
+message SvcStatus {
+  // If specified, the reply will contain only the service status for the requested service. If
+  // left blank then all services will report their status.
+  optional sup.types.PackageIdent ident = 1;
+}
+
+// A reply to various requests which contains a pre-formatted console line.
+message ConsoleLine {
+  required string line = 1;
+  optional string color = 2;
+  required bool bold = 3;
+}

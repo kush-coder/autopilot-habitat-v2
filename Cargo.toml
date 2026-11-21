@@ -1,0 +1,33 @@
+[profile.dev]
+# Incremental builds seem to be causing consistent compiler crashes on M1 macs
+# This was observed in version 1.58.1. Please remove if no longer relevant.
+incremental = false
+
+[profile.release]
+debug = true
+
+[workspace]
+# https://doc.rust-lang.org/cargo/reference/resolver.html#resolver-versions
+# https://doc.rust-lang.org/cargo/reference/workspaces.html#virtual-workspace
+# Summarizing, this being a virtual manifest we need to explicitly set the
+# resolver because edition is not available here.
+resolver = "3"
+members = [
+  "components/builder-api-client",
+  "components/butterfly",
+  "components/common", "components/common-derive",
+  "components/core",
+  "components/hab",
+  "components/http-client",
+  "components/launcher",
+  "components/launcher-client",
+  "components/launcher-protocol",
+  "components/pkg-export-container",
+  "components/pkg-export-tar",
+  "components/rst-reader",
+  "components/sup",
+  "components/sup-client",
+  "components/sup-protocol",
+  "components/win-users",
+  "test-services/test-probe",
+]

@@ -1,0 +1,5 @@
+syntax = "proto2";
+
+package launcher.supervisor;
+
+message Shutdown {}

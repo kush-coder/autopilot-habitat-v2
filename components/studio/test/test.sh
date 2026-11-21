@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# This is a lightweight test to verify a studio can be created before merging a PR.
+# This (hopefully) prevents us spending time building the first half of a release 
+# only to hit a broken studio. 
+# 
+# Failure case: because this creates a studio from source, we don't exercise changes
+# in our plan.sh, and could still end up with a bad studio build.
+
+
+set -euo pipefail
+
+export HAB_LICENSE="accept-no-persist"
+
+sudo -E hab pkg install core/busybox-static
+sudo -E hab pkg install chef/hab chef/hab-backline
+
+cp "$(hab pkg path core/busybox-static)"/bin/busybox libexec/busybox
+cp "$(hab pkg path chef/hab)"/bin/hab libexec/hab
+
+HAB_STUDIO_BACKLINE_PKG="$(< "$(hab pkg path chef/hab-backline)"/IDENT)"
+
+export HAB_STUDIO_BACKLINE_PKG
+
+sudo --preserve-env bin/hab-studio-linux.sh new
+
+rm libexec/hab
+rm libexec/busybox

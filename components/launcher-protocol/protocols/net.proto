@@ -1,0 +1,11 @@
+syntax = "proto2";
+
+package launcher.net;
+
+message Envelope {
+  reserved 3;
+  reserved "txn_id";
+
+  optional string message_id = 1;
+  optional bytes payload = 2;
+}

@@ -1,0 +1,108 @@
+[package]
+name = "habitat_sup"
+version = "0.0.0"
+edition = "2024"
+authors = ["The Habitat Maintainers <humans@habitat.sh>"]
+build = "./build.rs"
+workspace = "../../"
+
+[lib]
+name = "habitat_sup"
+
+[[bin]]
+name = "hab-sup"
+path = "src/main.rs"
+doc = false
+
+[dependencies]
+# Please keep these alphabetized
+actix-http = { version = "3", features = ["rustls-0_23"] }
+actix-rt = "*"
+actix-web = { version = "*", default-features = false, features = ["rustls-0_23"] }
+anyhow = { version = "*", features = ["backtrace"] }
+byteorder = "*"
+bytes = "*"
+clap_v4 = { version = "4", package = "clap", features = ["env", "derive", "string", "wrap_help"] }
+cpu-time = "*"
+fs2 = "*"
+futures = "*"
+glob = "*"
+hab = { path = "../hab" }
+habitat_api_client = { path = "../builder-api-client" }
+habitat_butterfly = { path = "../butterfly", default-features = false }
+habitat_common = { path = "../common" }
+habitat_core = { path = "../core" }
+habitat_http_client = { path = "../http-client" }
+habitat-launcher-client = { path = "../launcher-client" }
+habitat-sup-protocol = { path = "../sup-protocol", default-features = false }
+lazy_static = "*"
+libc = "*"
+log = "0.4"
+log4rs = { version = "*", default-features = false, features = ["console_appender", "config_parsing", "pattern_encoder", "yaml_format"] }
+multimap = "*"
+notify = "*"
+num_cpus = "*"
+parking_lot = "*"
+pin-project = "*"
+prometheus = { version = "*", default-features = false }
+prost = { version = "*", features = ["derive"] }
+prost-types = "*"
+rand = "*"
+rants = { version = "0.6.1", git = "https://github.com/habitat-sh/rants.git", features = ["native-tls"] }
+regex = "*"
+rustls = "*"
+serde = { version = "*", features = ["rc"] }
+serde_derive = "*"
+serde_json = { version = "*", features = ["preserve_order"] }
+serde_yaml = "*"
+state = "*"
+tempfile = "*"
+termcolor = "*"
+thiserror = "*"
+tokio = { version = "*", features = ["full"] }
+tokio-rustls = "*"
+tokio-util = { version = "0.7", features = ["full"] }
+toml = { version = "*", features = ["preserve_order"] }
+url = "*"
+uuid = { version = "*", features = ["v4"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+caps = "*"
+
+[target.'cfg(windows)'.dependencies]
+ctrlc = "*"
+habitat-launcher-protocol = { path = "../launcher-protocol" }
+mio = { version = "^1.2", features = ["os-ext"] }
+winapi = { version = "^0.3", features = ["namedpipeapi", "tlhelp32"] }
+
+[dev-dependencies]
+habitat_core = { path = "../core" }
+hyper = "*"
+jsonschema = { version = "*", default-features = false }
+# reqwest 0.13.0 changed the default TLS support from native-tls to rustls
+# this feature configuration is about using the features that were in effect
+# when our code was still locked to 0.12.8 (so reqwest defaults + our additions)
+reqwest = { version = "*", default-features = false, features = [
+    "charset",
+    "http2",
+    "json",
+    "native-tls-no-alpn",
+    "system-proxy",
+] }
+
+[target.'cfg(not(windows))'.dev-dependencies]
+nix = { version = "*", features = ["signal", "user"] }
+
+[build-dependencies]
+handlebars = "*"
+prost-build = "*"
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+serde_yaml = "*"
+
+[features]
+apidocs = []
+default = []
+ignore_integration_tests = []
+lock_as_mutex = ["habitat_common/lock_as_mutex"]
+lock_as_rwlock = ["habitat_common/lock_as_rwlock"]

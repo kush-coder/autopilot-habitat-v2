@@ -1,0 +1,30 @@
+[package]
+name = "habitat-launcher"
+version = "0.0.0"
+edition = "2024"
+authors = ["The Habitat Maintainers <humans@habitat.sh>"]
+workspace = "../../"
+
+[[bin]]
+name = "hab-launch"
+path = "src/main.rs"
+doc = false
+
+[dependencies]
+# Please keep these alphabetized
+anyhow = { version = "*", features = ["backtrace"] }
+env_logger = "*"
+habitat_common = { path = "../common" }
+habitat_core = { path = "../core" }
+habitat-launcher-protocol = { path = "../launcher-protocol" }
+ipc-channel = { version = "*" }
+libc = "*"
+log = "0.4"
+prost = "*"
+thiserror = "*"
+
+[target.'cfg(not(windows))'.dependencies]
+nix = { version = "*", features = ["signal", "user"] }
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "^0.3", features = ["tlhelp32"] }

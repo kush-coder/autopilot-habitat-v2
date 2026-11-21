@@ -1,0 +1,70 @@
+syntax = "proto2";
+
+package launcher.launcher;
+
+message Register {
+  optional string pipe = 1;
+}
+
+message Restart {
+  optional int64 pid = 1;
+}
+
+message Spawn {
+  // The name of the service group we're spawning, e.g. "redis.default".
+  optional string id = 1;
+  optional string binary = 2;
+  optional string svc_user = 3;
+  optional string svc_group = 4;
+  optional string svc_password = 5;
+  map<string, string> env = 6;
+  optional uint32 svc_user_id = 7;
+  optional uint32 svc_group_id = 8;
+}
+
+message SpawnOk {
+  optional int64 pid = 1;
+}
+
+message Terminate {
+  optional int64 pid = 1;
+}
+
+message TerminateOk {
+  optional int32 exit_code = 1;
+  optional ShutdownMethod shutdown_method = 2;
+}
+
+enum ShutdownMethod {
+  AlreadyExited = 0;
+  GracefulTermination = 1;
+  Killed = 2;
+}
+
+// Query the Launcher to find the current PID of the named
+// service.
+//
+// Note: this is the entire service group name, like
+// "redis.default". It really needs to be whatever Spawn#id is.
+message PidOf {
+  optional string service_name = 1;
+}
+
+// The response that corresponds to `PidOf`. If the service is known
+// to the Launcher, the PID will be present. If not, the PID will be
+// absent.
+message PidIs {
+  // TODO: the launcher really only deals with u32, but should this be
+  // int64 for consistency? Should we make a new type? What's the best
+  // way to evolve that?
+  optional uint32 pid = 1;
+}
+
+// Query the Launcher to determine the launcher's version
+message Version {}
+
+// The response that corresponds to `Version` and contains the
+// version number.
+message VersionNumber {
+  optional uint32 version = 1;
+}

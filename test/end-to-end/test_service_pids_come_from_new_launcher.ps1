@@ -1,0 +1,58 @@
+# When using a current Launcher the Supervisor should not create PID
+# files for the services it manages.
+
+Describe "Service PIDs from Launcher feature" {
+    BeforeAll {
+        $supLog = New-SupervisorLogFile("service_pids_come_from_launcher_feature")
+        Start-Supervisor -LogFile $supLog -Timeout 45
+
+        Load-SupervisorService -PackageName "core/redis"
+        Wait-ProcessStart redis-server -Timeout 10
+    }
+
+    It "should still create a PID file for use in hooks" {
+        Test-Path "/hab/svc/redis/PID" | Should -Be $true
+    }
+
+    Context "Supervisor is restarted" {
+        BeforeAll {
+            $script:supProc = Get-Process hab-sup
+            $redisProc = Get-Process "redis-server *:6379"
+
+            # Write a bogus PID to the file; the Supervisor should not
+            # think this is the actual PID of the service.
+            #
+            # NOTE: This is ONLY to prove, in the context of this test,
+            # that the Supervisor is not getting its idea of the process
+            # PID from the file. The Supervisor does not currently (and
+            # never did) try to keep the contents of the file in sync with
+            # the running service PID on an ongoing basis.
+            $bogusPid = $redisProc.Id + 5
+            $bogusPid | Out-File "/hab/svc/redis/PID"
+
+            Restart-Supervisor
+            Wait-ProcessStart redis-server -Timeout 10
+            $script:newSupProc = Get-Process hab-sup
+            $script:newRedisProc = Get-Process "redis-server *:6379"
+        }
+
+        It "starts a new supervisor process" {
+            $script:supProc.Id | Should -Not -Be $script:newSupProc.Id
+        }
+        It "runs the same redis process" {
+            $redisProc.Id | Should -Be $script:newRedisProc.Id
+        }
+
+        It "should not have gotten the service PID from the PID file" {
+            # The contents of the PID file are still incorrect; the
+            # Supervisor doesn't rewrite it after it restarts (it
+            # would after a full restart, but that would bring up a
+            # new service process anyway)
+            Get-Content "/hab/svc/redis/PID" | Should -Be $bogusPid
+
+            # Despite the bogus PID in the file, the Supervisor itself
+            # knows the correct PID
+            Get-HabServicePID "core/redis" | Should -Be $script:newRedisProc.Id
+        }
+    }
+}

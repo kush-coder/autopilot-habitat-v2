@@ -1,0 +1,24 @@
+syntax = "proto2";
+
+package launcher.error;
+
+enum ErrCode {
+  Unknown = 0;
+  GroupNotFound = 1;
+  UserNotFound = 2;
+  ExecWait = 3;
+  NoPID = 4;
+  // Returned when the Launcher receives a protocol message that it
+  // does not know how to handle. This could happen if a newer
+  // Supervisor was trying to communicate with an older Launcher that
+  // didn't understand a newer message, for instance.
+  UnknownMessage = 5;
+  InvalidVersionNumber = 6;
+}
+
+message NetErr {
+  optional ErrCode code = 1;
+  optional string msg = 2;
+}
+
+message NetOk {}

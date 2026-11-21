@@ -1,0 +1,179 @@
+# Test that SSL_CERT_FILE is persisted into the studio and
+# set to the correct internal path.
+$ErrorActionPreference="stop"
+
+Describe "Studio SSL certificates" {
+    BeforeAll {
+        $script:originalSslCertFile = $env:SSL_CERT_FILE
+        $env:SSL_CERT_FILE = $null
+        function Remove-CachedCertificate {
+            $hab_ssl_cache="/hab/cache/ssl"
+            Remove-Item -Force "$hab_ssl_cache/*" -ErrorAction SilentlyContinue
+        }
+
+        Invoke-NativeCommand hab origin key generate "$env:HAB_ORIGIN"
+
+        $tempdir = New-TemporaryDirectory
+        $e2e_certname = "e2e-ssl.pem"
+        New-TestCertificate -Path (Join-Path $tempdir $e2e_certname) -KeyPath (Join-Path $tempdir "key.pem")
+
+        if($IsLinux) {
+            $script:sslCertFileCheck = "test -f `$SSL_CERT_FILE"
+            $script:sslCertFilePrint = "echo `$SSL_CERT_FILE"
+            $script:sslCacheCertFileCheck = "test -f '/hab/cache/ssl/$e2e_certname'"
+            $script:sslCertFileNotSetCheck = "test `$SSL_CERT_FILE = `$(hab pkg path core/cacerts)/ssl/certs/cacert.pem"
+        } else {
+            $script:sslCertFileCheck = "exit (!(Test-Path `$env:SSL_CERT_FILE))"
+            $script:sslCertFilePrint = "`$env:SSL_CERT_FILE.Replace('\','/')"
+            $script:sslCacheCertFileCheck = "exit (!(Test-Path '/hab/cache/ssl/$e2e_certname'))"
+            $script:sslCertFileNotSetCheck = "exit `$(!!(`$env:SSL_CERT_FILE))"
+        }
+    }
+
+    BeforeEach {
+        $env:SSL_CERT_FILE = $null
+        hab studio rm
+        Remove-CachedCertificate
+        New-Item -ItemType Directory -Force -Path /hab/cache/ssl | Out-Null
+    }
+
+    AfterAll {
+        $env:SSL_CERT_FILE = $script:originalSslCertFile
+        if ($tempdir -and (Test-Path $tempdir)) {
+            Remove-Item -Recurse -Force $tempdir
+        }
+    }
+
+    Context "SSL_CERT_FILE is passed into the studio" {
+        Describe "SSL_CERT_FILE is a valid certificate" {
+            BeforeEach {
+                $env:SSL_CERT_FILE = (Join-Path $tempdir $e2e_certname)
+            }
+            It "Sets env:SSL_CERT_FILE in the studio"  {
+                $expected = "/hab/cache/ssl/$e2e_certname"
+                $result = Invoke-StudioRun $script:sslCertFilePrint
+                $result[-1] | Should -BeLike "*$expected"
+            }
+
+            It "Copies the certificate described by SSL_CERT_FILE into the studio" {
+                Invoke-StudioRun $script:sslCertFileCheck
+                $LASTEXITCODE | Should -Be 0
+            }
+
+            It "Can search builder for packages when SSL_CERT_FILE is set" {
+                $result = Invoke-StudioRun "hab pkg search core/nginx"
+                $result | Should -Contain "core/nginx"
+            }
+        }
+
+        Describe "Custom SSL cert" {
+            BeforeEach {
+                if($IsLinux) {
+                    Invoke-NativeCommand sudo cp (Join-Path $tempdir $e2e_certname) /hab/cache/ssl/
+                } else {
+                    Copy-Item (Join-Path $tempdir $e2e_certname) /hab/cache/ssl/
+                }
+            }
+
+            It "is available in studio" {
+                Invoke-StudioRun $script:sslCacheCertFileCheck
+                $LASTEXITCODE | Should -Be 0
+            }
+        }
+
+        Describe "SSL_CERT_FILE is an invalid certificate" {
+            BeforeEach {
+                $env:SSL_CERT_FILE = (Join-Path $tempdir "invalid_certificate")
+                Set-Content -Path $env:SSL_CERT_FILE -Value "I am not a certificate"
+            }
+
+            It "Can still search packages on builder" {
+                $result = Invoke-StudioRun "hab pkg search core/nginx"
+                $result | Should -Contain "core/nginx"
+            }
+        }
+
+        Describe "SSL_CERT_FILE is an invalid cached certificate" {
+            BeforeEach {
+                if($IsLinux) {
+                    Invoke-NativeCommand sudo sh -c 'echo "I am not a certificate" > /hab/cache/ssl/invalid-ssl-cert.pem'
+                } else {
+                    Set-Content -Path /hab/cache/ssl/invalid-ssl-cert.pem -Value "I am not a certificate"
+                }
+            }
+
+            It "Can still search packages on builder" {
+                $result = Invoke-StudioRun "hab pkg search core/nginx"
+                $result | Should -Contain "core/nginx"
+            }
+        }
+
+        Describe "SSL_CERT_FILE is a directory" {
+            BeforeEach {
+                $env:SSL_CERT_FILE = (Join-Path $tempdir "cert-as-directory")
+                New-Item -ItemType Directory -Force -Path $env:SSL_CERT_FILE
+            }
+
+            It "Should not set SSL_CERT_FILE" {
+                Invoke-StudioRun $script:sslCertFileNotSetCheck
+                $LASTEXITCODE | Should -Be 0
+            }
+
+            It "Should not copy the directory into the studio" {
+                if($isLinux) {
+                    Invoke-StudioRun "test -e /hab/cache/ssl/cert-as-directory"
+                } else {
+                    Invoke-StudioRun $script:sslCertFileCheck
+                }
+
+                $LASTEXITCODE | Should -Be 1
+            }
+
+            It "Can still search packages on builder" {
+                $result = Invoke-StudioRun "hab pkg search core/nginx"
+                $result | Should -Contain "core/nginx"
+            }
+        }
+
+        Describe "SSL_CERT_FILE is a non-existant-file" {
+            BeforeEach {
+                $env:SSL_CERT_FILE = (Join-Path $tempdir "non-existant-file")
+                if (Test-Path $env:SSL_CERT_FILE) {
+                    Remove-Item -Path $env:SSL_CERT_FILE -Force
+                }
+            }
+
+            It "Should not copy the file into the studio" {
+                if($isLinux) {
+                    Invoke-StudioRun "test -e /hab/cache/ssl/non-existant-file"
+                } else {
+                    Invoke-StudioRun $script:sslCertFileCheck
+                }
+                $LASTEXITCODE | Should -Be 1
+            }
+
+            It "Should not set SSL_CERT_FILE" {
+                Invoke-StudioRun $script:sslCertFileNotSetCheck
+                $LASTEXITCODE | Should -Be 0
+            }
+
+            It "Can still search packages on builder" {
+                $result = Invoke-StudioRun "hab pkg search core/nginx"
+                $result | Should -Contain "core/nginx"
+            }
+        }
+    }
+
+    Context "SSL_CERT_FILE isn't set" {
+        BeforeEach {
+            hab pkg uninstall chef/hab-studio
+        }
+
+        Describe "Studio is auto-installed on first run" {
+            It "Should not set SSL_CERT_FILE in the studio" {
+                Invoke-StudioRun $script:sslCertFileNotSetCheck
+                $LASTEXITCODE | Should -Be 0
+            }
+        }
+    }
+}

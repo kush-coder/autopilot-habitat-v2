@@ -1,0 +1,13 @@
+[package]
+name = "hab-common-derive"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+# Please keep these alphabetized
+proc-macro2 = "*"
+quote = "*"
+syn = { version = "*", features = ["extra-traits", "parsing"] }

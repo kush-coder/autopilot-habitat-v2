@@ -1,0 +1,8 @@
+format_version = 1
+file_descriptor = "fooa"
+
+# option 1,
+# complex, target first
+[[x86_64-windows]]
+channel = "stable"
+packages = ["core/powershell/not/a/real/ident"]

@@ -1,0 +1,54 @@
+[package]
+name = "habitat_butterfly"
+version = "0.1.0"
+edition = "2024"
+authors = ["The Habitat Maintainers <humans@habitat.sh>"]
+build = "build.rs"
+workspace = "../../"
+
+[[bin]]
+name = "butterfly"
+path = "src/main.rs"
+doc = false
+
+[dependencies]
+# Please keep these alphabetized
+byteorder = "*"
+bytes = "*"
+env_logger = "*"
+habitat_common = { path = "../common" }
+habitat_core = { path = "../core" }
+lazy_static = "*"
+log = "0.4"
+parking_lot = "*"
+prometheus = { version = "*", default-features = false }
+prost = { version = "*", features = ["derive"] }
+rand = "*"
+serde = { version = "*", features = ["derive", "rc"] }
+serde_json = { version = "*", features = ["preserve_order"] }
+tempfile = "*"
+threadpool = "*"
+toml = { version = "*", features = ["preserve_order"] }
+uuid = { version = "*", features = ["v4"] }
+# Pinned to 0.9.x: zmq-sys 0.12.0 (pulled in by zmq >=0.10) always vendors
+# and statically builds libzmq (zeromq-src) with no opt-out. zmq 0.9.x
+# depends on zmq-sys ^0.11.0 instead, whose default (non-"vendored")
+# build path dynamically links against the Habitat-provided libzmq via
+# the LIBZMQ_PREFIX env var already exported in habitat/plan.sh
+# (pkg_path_for zeromq).
+zmq = "0.9"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "^0.3", features = ["handleapi", "winbase"] }
+
+[dev-dependencies]
+mktemp = "*"
+
+[build-dependencies]
+prost-build = "*"
+
+[features]
+default = []
+lock_as_rwlock = ["habitat_common/lock_as_rwlock"]
+lock_as_mutex = ["habitat_common/lock_as_mutex"]
+deadlock_detection = ["parking_lot/nightly", "parking_lot/deadlock_detection", "habitat_common/deadlock_detection"]

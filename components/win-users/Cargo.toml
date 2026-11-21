@@ -1,0 +1,18 @@
+[package]
+name = "habitat_win_users"
+version = "0.0.0"
+edition = "2024"
+authors = ["The Habitat Maintainers <humans@habitat.sh>"]
+description = "Habitat library for win32 account api calls"
+workspace = "../../"
+build = "build.rs"
+
+[build-dependencies]
+cc = "*"
+
+[dependencies]
+log = "0.4"
+
+[target.'cfg(windows)'.dependencies]
+widestring = "*"
+winapi = { version = "^0.3", features = ["winbase", "winerror", "handleapi", "sddl", "securitybaseapi"] }

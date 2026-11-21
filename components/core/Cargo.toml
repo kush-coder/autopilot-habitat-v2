@@ -1,0 +1,97 @@
+[package]
+name = "habitat_core"
+version = "0.0.0"
+edition = "2024"
+authors = ["The Habitat Maintainers <humans@habitat.sh>"]
+workspace = "../../"
+build = "build.rs"
+
+[build-dependencies]
+base64 = "*"
+cc = "*"
+pem = "*"
+
+[dependencies]
+# Please keep these alphabetized
+base64 = "*"
+blake2b_simd = "*"
+chrono = "*"
+dirs = "*"
+dns-lookup = "*"
+errno = "*"
+glob = "*"
+hex = "*"
+lazy_static = "*"
+libc = "*"
+libsodium-rs = "*"
+log = "0.4"
+native-tls = { version = "*", features = ["vendored"] }
+os_info = "*"
+pem = "*"
+pin-project = "*"
+rand = { version = "*", features = ["thread_rng"] }
+rcgen = "*"
+regex = "*"
+rustls = "*"
+rustls-pki-types = "*"
+rustls-webpki = "*"
+serde = { version = "*", features = ["derive"] }
+serde_json = { version = "*", features = ["preserve_order"] }
+tabwriter = "*"
+tar = "*"
+tempfile = "*"
+thiserror = "*"
+tokio = { version = "*", features = ["full"] }
+tokio-rustls = "*"
+toml = { version = "*", features = ["preserve_order"] }
+url = "*"
+xz2 = "*"
+
+[target.'cfg(not(windows))'.dependencies]
+nix = { version = "*", features = ["signal", "user", "fs"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+caps = "*"
+
+[target.'cfg(windows)'.dependencies]
+ctrlc = "*"
+habitat_win_users = { path = "../win-users" }
+widestring = "*"
+winapi = { version = "^0.3", features = [
+  "dpapi",
+  "ioapiset",
+  "namedpipeapi",
+  "synchapi",
+  "winbase",
+  "wincrypt",
+  "winerror",
+  "ws2def",
+] }
+windows-acl = "*"
+windows-sys = { version = "^0.61.2", features = ["Win32_Foundation", "Win32_System_Environment"] }
+
+[dev-dependencies]
+num_cpus = "*"                                       # For doc tests
+# reqwest 0.13.0 changed the default TLS support from native-tls to rustls
+# this feature configuration is about using the features that were in effect
+# when our code was still locked to 0.12.8 (so reqwest defaults + our additions)
+reqwest = { version = "*", default-features = false, features = [
+  "blocking",
+  "charset",
+  "http2",
+  "native-tls-no-alpn",
+  "system-proxy",
+] }
+serde_test = "*"
+
+[features]
+aarch64-darwin = []
+aarch64-linux = []
+default = ["supported_targets"]
+functional = []
+supported_targets = ["x86_64-darwin", "x86_64-linux", "x86_64-linux-kernel2", "x86_64-windows", "aarch64-darwin", "aarch64-linux", "aarch64-windows"]
+x86_64-darwin = []
+x86_64-linux = []
+x86_64-linux-kernel2 = []
+x86_64-windows = []
+aarch64-windows = []

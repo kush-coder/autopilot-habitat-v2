@@ -1,0 +1,476 @@
+use crate::manager::{file_watcher::{Callbacks,
+                                    FileWatcher},
+                     service::Service};
+use habitat_common::{liveliness_checker,
+                     outputln,
+                     templating::config::UserConfigPath};
+use habitat_core::{fs::USER_CONFIG_FILE,
+                   service::ServiceGroup};
+use log::debug;
+use std::{collections::HashMap,
+          io,
+          path::{Path,
+                 PathBuf},
+          sync::{Arc,
+                 Mutex,
+                 mpsc::{Receiver,
+                        Sender,
+                        SyncSender,
+                        TryRecvError,
+                        TrySendError,
+                        channel,
+                        sync_channel}},
+          thread::{self,
+                   Builder as ThreadBuilder},
+          time::Duration};
+
+static LOGKEY: &str = "UCW";
+
+// This trait exists to ease the testing of functions that receive a Service. Creating Services
+// requires a lot of ceremony, so we work around this with this trait.
+pub trait Serviceable {
+    fn name(&self) -> &str;
+    fn user_config_path(&self) -> &UserConfigPath;
+    fn service_group(&self) -> &ServiceGroup;
+}
+
+impl Serviceable for Service {
+    fn name(&self) -> &str { &self.pkg.name }
+
+    fn user_config_path(&self) -> &UserConfigPath { &self.cfg.user_config_path }
+
+    fn service_group(&self) -> &ServiceGroup { &self.service_group }
+}
+
+// WorkerState contains the channels the worker uses to communicate
+// with the Watcher.
+struct WorkerState {
+    // This receiver is used by the watcher to be notified when a
+    // worker has events.  The channel is a SyncChannel with buffer
+    // size 1, as we are only interested in the fact that there were
+    // events, not how many there were.
+    have_events:      Receiver<()>,
+    // This sender is used by the watcher to notify a worker to stop
+    // running.  It is an async channel because we never want the
+    // UserConfigWatcher to block, even if the receiver end of the
+    // channel somehow dies and/or fails to consume the message.
+    stop_running:     Sender<()>,
+    // This receiver is used by the watcher tests to be notified when
+    // a worker finished setting up the watcher and is about to
+    // starting looping it.
+    //
+    // Silence the dead code warnings from rustc, because it is only
+    // used in tests for synchronization purposes.
+    #[allow(dead_code)]
+    started_watching: Receiver<()>,
+}
+
+type ServiceName = String;
+#[derive(Clone)]
+pub struct UserConfigWatcher {
+    // We use Arc/Mutex here, because this needs to be shareable
+    // across threads so we can remove watchers from futures; the
+    // Sender and Receiver members of WorkerState aren't themselves
+    // shareable.
+    states: Arc<Mutex<HashMap<ServiceName, WorkerState>>>,
+}
+
+impl UserConfigWatcher {
+    pub fn new() -> Self { Self { states: Arc::new(Mutex::new(HashMap::new())), } }
+
+    /// Adds a service to the User Config Watcher, thereby starting a watcher thread.
+    pub fn add<T: Serviceable>(&mut self, service: &T) -> io::Result<()> {
+        // It isn't possible to use the `or_insert_with` function here because it can't have a
+        // return value, which we need to return the error from `Worker::run`.
+        let mut states = self.states.lock().expect("states lock was poisoned");
+        if states.get(service.name()).is_none() {
+            let user_toml_path = service.user_config_path().get_path().join(USER_CONFIG_FILE);
+
+            // Establish bi-directional communication with the worker by creating two channels.
+            // The sync_channel's buffer size is 1 because we want to use it as a boolean, i.e. we
+            // are not interested in the events themselves, but only whether at least one has
+            // happened.
+            let (events_tx, events_rx) = sync_channel(1);
+            let (running_tx, running_rx) = channel();
+            let (watching_tx, watching_rx) = sync_channel(1);
+
+            Worker::run(user_toml_path, events_tx, running_rx, watching_tx)?;
+
+            outputln!(preamble service.service_group(), "Watching {}", USER_CONFIG_FILE);
+
+            let state = WorkerState { have_events:      events_rx,
+                                      stop_running:     running_tx,
+                                      started_watching: watching_rx, };
+
+            states.insert(service.name().to_owned(), state);
+        }
+
+        Ok(())
+    }
+
+    /// Removes a service from the User Config Watcher, and sends a message to the watcher thread
+    /// to stop running.
+    pub fn remove<T: Serviceable>(&mut self, service: &T) {
+        if let Some(state) = self.states
+                                 .lock()
+                                 .expect("states lock was poisoned")
+                                 .remove(service.name())
+           && let Err(e) = state.stop_running.send(())
+        {
+            debug!("Error stopping user-config watcher thread for service {}: {:?}",
+                   service.name(),
+                   e);
+        }
+    }
+
+    /// Checks whether the watcher for the specified service has observed any events.
+    ///
+    /// This also consumes the events.
+    pub fn have_events_for<T: Serviceable>(&self, service: &T) -> bool {
+        if let Some(state) = self.states
+                                 .lock()
+                                 .expect("states lock was poisoned")
+                                 .get(service.name())
+        {
+            let rx = &state.have_events;
+
+            match rx.try_recv() {
+                Ok(_) => {
+                    return true;
+                }
+                Err(TryRecvError::Empty) => return false,
+                Err(TryRecvError::Disconnected) => {
+                    debug!("UserConfigWatcher worker has died!");
+                    return false;
+                }
+            }
+        }
+
+        false
+    }
+}
+
+struct UserConfigCallbacks {
+    have_events: SyncSender<()>,
+}
+
+impl Callbacks for UserConfigCallbacks {
+    fn file_appeared(&mut self, _: &Path) { self.perform(); }
+
+    fn file_modified(&mut self, _: &Path) { self.perform(); }
+
+    fn file_disappeared(&mut self, _: &Path) { self.perform(); }
+}
+
+impl UserConfigCallbacks {
+    fn perform(&self) {
+        if let Err(TrySendError::Disconnected(_)) = self.have_events.try_send(()) {
+            debug!("Worker could not notify Manager of event");
+        }
+    }
+}
+
+struct Worker;
+
+impl Worker {
+    // starts a new thread with the file watcher tracking the service's user-config file
+    pub fn run(path: PathBuf,
+               have_events: SyncSender<()>,
+               stop_running: Receiver<()>,
+               started_watching: SyncSender<()>)
+               -> io::Result<()> {
+        ThreadBuilder::new().name(format!("user-config-watcher-{}", path.display()))
+                            .spawn(move || -> liveliness_checker::ThreadUnregistered<(), String> {
+                                let checked_thread = liveliness_checker::mark_thread_alive();
+
+                                debug!("UserConfigWatcher({}) worker thread starting",
+                                       path.display(),);
+                                let callbacks = UserConfigCallbacks { have_events };
+                                let mut file_watcher =
+                                    match FileWatcher::<UserConfigCallbacks>::new(&path, callbacks, false)
+                                    {
+                                        Ok(w) => w,
+                                        Err(e) => {
+                                            let msg = format!("UserConfigWatcher({}) could not \
+                                                               start notifier, ending thread ({})",
+                                                              path.display(),
+                                                              e,);
+                                            outputln!("{}", msg);
+                                            return checked_thread.unregister(Err(msg));
+                                        }
+                                    };
+
+                                let _ = started_watching.try_send(());
+
+                                loop {
+                                    let checked_thread = liveliness_checker::mark_thread_alive();
+
+                                    match stop_running.try_recv() {
+                                        // As long as the `stop_running` channel is
+                                        // empty, this branch will execute on every
+                                        // iteration.
+                                        Err(TryRecvError::Empty) => {
+                                            if let Err(e) = file_watcher.single_iteration() {
+                                                let msg = format!("UserConfigWatcher({}) could \
+                                                                   not run notifier, ending \
+                                                                   thread ({})",
+                                                                  path.display(),
+                                                                  e,);
+                                                outputln!("{}", msg);
+                                                break checked_thread.unregister(Err(msg));
+                                            };
+                                        }
+
+                                        // If we receive a message on the channel, we stop.
+                                        Ok(_) => break checked_thread.unregister(Ok(())),
+
+                                        // If the channel is disconnected, we stop as well.
+                                        Err(TryRecvError::Disconnected) => {
+                                            let msg = format!("UserConfigWatcher({}) worker \
+                                                               thread failed to receive on \
+                                                               channel",
+                                                              path.display(),);
+                                            debug!("{}", msg);
+                                            break checked_thread.unregister(Err(msg));
+                                        }
+                                    }
+
+                                    thread::sleep(Duration::from_secs(1));
+                                }
+                            })?;
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use habitat_core::locked_env_var;
+    use std::{fs::{File,
+                   remove_file},
+              io::Write,
+              str::FromStr,
+              thread,
+              time::{Duration,
+                     Instant}};
+
+    use crate::manager::file_watcher::WATCHER_DELAY_MS;
+
+    use tempfile::TempDir;
+
+    locked_env_var!(HAB_STUDIO_HOST_ARCH, lock_env_var);
+
+    #[test]
+    fn no_events_at_first() {
+        let lock = lock_env_var();
+        lock.unset();
+
+        let service = TestService::default();
+        let mut ucm = UserConfigWatcher::new();
+        ucm.add(&service).expect("adding service");
+
+        assert!(!ucm.have_events_for(&service));
+    }
+
+    #[test]
+    fn no_events_at_first_poll_watcher() {
+        let lock = lock_env_var();
+        lock.set("aarch64-darwin");
+
+        let service = TestService::default();
+        let mut ucm = UserConfigWatcher::new();
+        ucm.add(&service).expect("adding service");
+
+        lock.unset();
+
+        assert!(!ucm.have_events_for(&service));
+    }
+
+    #[test]
+    fn events_present_after_adding_config() {
+        let lock = lock_env_var();
+        lock.unset();
+
+        let service = TestService::default();
+        let mut ucm = UserConfigWatcher::new();
+        ucm.add(&service).expect("adding service");
+        assert!(wait_for_watcher(&ucm, &service));
+
+        File::create(service.user_config_path().get_path().join(USER_CONFIG_FILE))
+            .expect("creating file");
+
+        assert!(wait_for_events(&ucm, &service));
+    }
+
+    #[test]
+    fn events_present_after_adding_config_poll_watcher() {
+        let lock = lock_env_var();
+        lock.set("aarch64-darwin");
+
+        let service = TestService::default();
+        let mut ucm = UserConfigWatcher::new();
+        ucm.add(&service).expect("adding service");
+        assert!(wait_for_watcher(&ucm, &service));
+
+        File::create(service.user_config_path().get_path().join(USER_CONFIG_FILE))
+            .expect("creating file");
+
+        lock.unset();
+
+        assert!(wait_for_events(&ucm, &service));
+    }
+
+    #[test]
+    fn events_present_after_changing_config() {
+        let lock = lock_env_var();
+        lock.unset();
+
+        let service = TestService::default();
+        let file_path = service.user_config_path().get_path().join(USER_CONFIG_FILE);
+        let mut ucm = UserConfigWatcher::new();
+
+        ucm.add(&service).expect("adding service");
+        assert!(wait_for_watcher(&ucm, &service));
+        let mut file = File::create(file_path).expect("creating file");
+
+        file.write_all(b"42").expect(USER_CONFIG_FILE);
+
+        assert!(wait_for_events(&ucm, &service));
+    }
+
+    #[test]
+    fn events_present_after_changing_config_poll_watcher() {
+        let lock = lock_env_var();
+        lock.set("aarch64-darwin");
+
+        let service = TestService::default();
+        let file_path = service.user_config_path().get_path().join(USER_CONFIG_FILE);
+        let mut ucm = UserConfigWatcher::new();
+
+        ucm.add(&service).expect("adding service");
+        assert!(wait_for_watcher(&ucm, &service));
+        let mut file = File::create(file_path).expect("creating file");
+
+        file.write_all(b"42").expect(USER_CONFIG_FILE);
+
+        lock.unset();
+
+        assert!(wait_for_events(&ucm, &service));
+    }
+
+    #[test]
+    fn events_present_after_removing_config() {
+        let lock = lock_env_var();
+        lock.unset();
+
+        let service = TestService::default();
+        let file_path = service.user_config_path().get_path().join(USER_CONFIG_FILE);
+        let mut ucm = UserConfigWatcher::new();
+
+        ucm.add(&service).expect("adding service");
+        assert!(wait_for_watcher(&ucm, &service));
+        File::create(&file_path).expect("creating file");
+
+        // Allow the watcher to notice that a file was created.
+        wait_for_events(&ucm, &service);
+
+        remove_file(&file_path).expect("removing file");
+
+        assert!(wait_for_events(&ucm, &service));
+    }
+
+    #[test]
+    fn events_present_after_removing_config_poll_watcher() {
+        let lock = lock_env_var();
+        lock.set("aarch64-darwin");
+
+        let service = TestService::default();
+        let file_path = service.user_config_path().get_path().join(USER_CONFIG_FILE);
+        let mut ucm = UserConfigWatcher::new();
+
+        ucm.add(&service).expect("adding service");
+        assert!(wait_for_watcher(&ucm, &service));
+        File::create(&file_path).expect("creating file");
+
+        // Allow the watcher to notice that a file was created.
+        wait_for_events(&ucm, &service);
+
+        remove_file(&file_path).expect("removing file");
+
+        lock.unset();
+
+        assert!(wait_for_events(&ucm, &service));
+    }
+
+    fn wait_for_watcher<T: Serviceable>(ucm: &UserConfigWatcher, service: &T) -> bool {
+        let start = Instant::now();
+        let timeout = Duration::from_secs(10);
+
+        while start.elapsed() < timeout {
+            let states = ucm.states.lock().expect("states lock was poisoned");
+            let state = states.get(service.name()).expect("service added");
+            match state.started_watching.try_recv() {
+                Ok(_) => {
+                    println!("Received data on the start_watching channel. Returning true.");
+                    return true;
+                }
+                Err(TryRecvError::Empty) => {
+                    println!("Received nothing on the start_watching channel. Returning ().");
+                }
+                Err(TryRecvError::Disconnected) => {
+                    println!("The start_watching channel was disconnected. Returning false.");
+                    return false;
+                }
+            }
+
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        false
+    }
+
+    fn wait_for_events<T: Serviceable>(ucm: &UserConfigWatcher, service: &T) -> bool {
+        let start = Instant::now();
+        let timeout = Duration::from_millis(WATCHER_DELAY_MS * 10);
+
+        while start.elapsed() < timeout {
+            if ucm.have_events_for(service) {
+                return true;
+            }
+
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        false
+    }
+
+    struct TestService {
+        // It is only used as a way to remove the temporary directory
+        // when the test finishes. Not used otherwise.
+        #[allow(dead_code)]
+        tmp:              TempDir,
+        name:             String,
+        user_config_path: UserConfigPath,
+        service_group:    ServiceGroup,
+    }
+
+    impl Serviceable for TestService {
+        fn name(&self) -> &str { &self.name }
+
+        fn user_config_path(&self) -> &UserConfigPath { &self.user_config_path }
+
+        fn service_group(&self) -> &ServiceGroup { &self.service_group }
+    }
+
+    impl Default for TestService {
+        fn default() -> Self {
+            let tmp = TempDir::new().expect("creating temp dir");
+            let path = UserConfigPath::new(tmp.path().to_path_buf());
+            Self { tmp,
+                   name: String::from("foo"),
+                   user_config_path: path,
+                   service_group: ServiceGroup::from_str("foo.bar@yoyodyne").unwrap() }
+        }
+    }
+}

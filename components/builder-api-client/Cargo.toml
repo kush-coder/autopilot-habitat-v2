@@ -1,0 +1,37 @@
+[package]
+name = "habitat_api_client"
+version = "0.0.0"
+edition = "2024"
+authors = ["The Habitat Maintainers <humans@habitat.sh>"]
+workspace = "../../"
+
+[dependencies]
+broadcast = "*"
+bytes = "*"
+chrono = "*"
+futures = "*"
+habitat_core = { path = "../core" }
+habitat_http_client = { path = "../http-client" }
+log = "0.4"
+pbr = "*"
+percent-encoding = "*"
+rand = "*"
+regex = "*"
+# reqwest 0.13.0 changed the default TLS support from native-tls to rustls
+# this feature configuration is about using the features that were in effect
+# when our code was still locked to 0.12.8 (so reqwest defaults + our additions)
+reqwest = { version = "*", default-features = false, features = [
+    "blocking",
+    "charset",
+    "http2",
+    "json",
+    "native-tls-no-alpn",
+    "stream",
+    "system-proxy",
+] }
+serde = { version = "*", features = ["derive"] }
+serde_json = { version = "*", features = ["preserve_order"] }
+tee = "*"
+tokio = { version = "*", features = ["full"] }
+tokio-util = { version = "0.7", features = ["compat", "codec"] }
+url = "*"

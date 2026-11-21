@@ -1,0 +1,517 @@
+#!/bin/bash
+
+set -eou pipefail
+
+umask 0022
+
+# If the variable `$DEBUG` is set, then print the shell commands as we execute.
+if [ -n "${DEBUG:-}" ]; then set -x; fi
+
+readonly pcio_root="https://packages.chef.io/files"
+export HAB_LICENSE="accept-no-persist"
+
+main() {
+  # Use stable Bintray channel by default
+  channel="stable"
+  # Set an empty version variable, signaling we want the latest release
+  version=""
+
+  # Parse command line flags and options.
+  while getopts "c:hv:t:u:" opt; do
+    case "${opt}" in
+    c)
+      channel="${OPTARG}"
+      ;;
+    h)
+      print_help
+      exit 0
+      ;;
+    v)
+      version="${OPTARG}"
+      ;;
+    t)
+      target="${OPTARG}"
+      ;;
+    u)
+      bldrUrl="${OPTARG}"
+      ;;
+    \?)
+      echo "" >&2
+      print_help >&2
+      exit_with "Invalid option" 1
+      ;;
+    esac
+  done
+
+  info "Installing Habitat 'hab' program"
+  create_workdir
+  get_platform
+  validate_target
+  download_archive "$version" "$channel" "$target"
+  verify_archive
+  extract_archive
+  origin="$(get_origin_from_manifest)"
+  info "Discovered origin from manifest: $origin"
+  install_hab "$origin"
+  print_hab_version
+  info "Installation of Habitat 'hab' program complete."
+}
+
+print_help() {
+  need_cmd cat
+  need_cmd basename
+
+  local _cmd
+  _cmd="$(basename "${0}")"
+  cat <<-HEREDOC
+		${_cmd}
+
+		Authors: The Habitat Maintainers <humans@habitat.sh>
+
+		Installs the Habitat 'hab' program.
+
+		USAGE:
+		    ${_cmd} [FLAGS]
+
+		FLAGS:
+		    -c    Specifies a channel [values: stable, unstable] [default: stable]
+		    -h    Prints help information
+		    -v    Specifies a version (ex: 0.15.0, 0.15.0/20161222215311)
+		    -t    Specifies the ActiveTarget of the 'hab' program to download.
+		            [values: x86_64-linux, aarch64-linux] [default: x86_64-linux]
+		            This option is only valid on Linux platforms
+
+		ENVIRONMENT VARIABLES:
+		     SSL_CERT_FILE   allows you to verify against a custom cert such as one
+		                     generated from a corporate firewall
+
+	HEREDOC
+}
+
+create_workdir() {
+  need_cmd mktemp
+  need_cmd rm
+  need_cmd mkdir
+
+  if [ -n "${TMPDIR:-}" ]; then
+    local _tmp="${TMPDIR}"
+  elif [ -d /var/tmp ]; then
+    local _tmp=/var/tmp
+  else
+    local _tmp=/tmp
+  fi
+
+  workdir="$(mktemp -d -p "$_tmp" 2>/dev/null || mktemp -d "${_tmp}/hab.XXXX")"
+  # Add a trap to clean up any interrupted file downloads
+  # shellcheck disable=SC2154
+  trap 'code=$?; rm -rf "$workdir"; exit $code' INT TERM EXIT
+  cd "${workdir}"
+}
+
+get_platform() {
+  need_cmd uname
+  need_cmd tr
+
+  local _ostype
+  _ostype="$(uname -s)"
+
+  case "${_ostype}" in
+  Darwin | Linux)
+    sys="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    arch="$(uname -m | tr '[:upper:]' '[:lower:]')"
+    arch=${arch/arm64/aarch64}
+    ;;
+  *)
+    exit_with "Unrecognized OS type when determining platform: ${_ostype}" 2
+    ;;
+  esac
+
+  case "${sys}" in
+  darwin)
+    need_cmd shasum
+
+    ext=zip
+    shasum_cmd="shasum -a 256"
+    ;;
+  linux)
+    need_cmd sha256sum
+
+    ext=tar.gz
+    shasum_cmd="sha256sum"
+    ;;
+  *)
+    exit_with "Unrecognized sys type when determining platform: ${sys}" 3
+    ;;
+  esac
+
+  if [ -z "${target:-}" ]; then
+    target="${arch}-${sys}"
+  fi
+}
+
+# Validate the CLI Target requested.  In most cases ${arch}-${sys}
+# for the current system is the only valid Target. Creates an
+# array of valid Targets for the current system,
+# adding any valid alternate Targets, and checks if the requested
+# Target is present in the array.
+validate_target() {
+  local valid_targets=("${arch}-${sys}")
+  case "${sys}" in
+  linux)
+    valid_targets+=("x86_64-linux-kernel2")
+    ;;
+  esac
+
+  if ! (_array_contains "${target}" "${valid_targets[@]}"); then
+    local _vts
+    printf -v _vts "%s, " "${valid_targets[@]}"
+    _e="${target} is not a valid target for this system. Please specify one of: [${_vts%, }]"
+    exit_with "$_e" 7
+  fi
+}
+
+download_archive() {
+  need_cmd mv
+
+  local _version="${1:-latest}"
+  local -r _channel="${2:?}"
+  local -r _target="${3:?}"
+  local url
+
+  if [ "$_version" == "latest" ]; then
+    url="${pcio_root}/${_channel}/habitat/latest"
+  else
+    local -r _release="$(echo "${_version}" | cut -d'/' -f2)"
+    if [ "${_release:+release}" == "release" ]; then
+      _version="$(echo "${_version}" | cut -d'/' -f1)"
+      info "packages.chef.io does not support 'version/release' format. Using $_version for the version"
+    fi
+    url="${pcio_root}/habitat/${_version}"
+  fi
+
+  dl_file "${url}/hab-${_target}.${ext}" "${workdir}/hab-${_version}.${ext}"
+  dl_file "${url}/hab-${_target}.${ext}.sha256sum" "${workdir}/hab-${_version}.${ext}.sha256sum"
+
+  # Download manifest.json to extract origin information
+  manifest_file="manifest.json"
+  dl_file "${url}/manifest.json" "${workdir}/manifest.json" || {
+    warn "Failed to download manifest.json, will fallback to default origin"
+    touch "${workdir}/manifest.json"  # Create empty file for fallback
+  }
+
+  archive="hab-${_target}.${ext}"
+  sha_file="hab-${_target}.${ext}.sha256sum"
+
+  mv -v "${workdir}/hab-${_version}.${ext}" "${archive}"
+  mv -v "${workdir}/hab-${_version}.${ext}.sha256sum" "${sha_file}"
+
+  if command -v gpg >/dev/null; then
+    info "GnuPG tooling found, downloading signatures"
+    sha_sig_file="${archive}.sha256sum.asc"
+    key_file="${workdir}/chef.asc"
+    local _key_url="https://packages.chef.io/chef.asc"
+
+    dl_file "${url}/hab-${_target}.${ext}.sha256sum.asc" "${sha_sig_file}"
+    dl_file "${_key_url}" "${key_file}"
+  fi
+}
+
+verify_archive() {
+  if command -v gpg >/dev/null; then
+    info "GnuPG tooling found, verifying the shasum digest is properly signed"
+
+    gpg --no-permission-warning --dearmor "${key_file}"
+    gpg --no-permission-warning \
+      --keyring "${key_file}.gpg" --verify "${sha_sig_file}"
+  fi
+
+  info "Verifying the shasum digest matches the downloaded archive"
+  ${shasum_cmd} -c "${sha_file}"
+}
+
+extract_archive() {
+  need_cmd sed
+
+  info "Extracting ${archive}"
+  case "${ext}" in
+  tar.gz)
+    need_cmd zcat
+    need_cmd tar
+
+    archive_dir="${archive%.tar.gz}"
+    mkdir "${archive_dir}"
+    zcat "${archive}" | tar --extract --directory "${archive_dir}" --strip-components=1
+
+    ;;
+  zip)
+    need_cmd unzip
+
+    archive_dir="${archive%.zip}"
+    # -j "junk paths" Strips leading paths from files,
+    unzip -j "${archive}" -d "${archive_dir}"
+    ;;
+  *)
+    exit_with "Unrecognized file extension when extracting: ${ext}" 4
+    ;;
+  esac
+}
+
+install_hab_macos_stable() {
+    need_cmd mkdir
+    need_cmd install
+
+    info "Installing hab into /usr/local/bin"
+    mkdir -pv /usr/local/bin
+    install -v "${archive_dir}"/hab /usr/local/bin/hab
+
+    # Copy NOTICES.txt if it exists in the archive
+    if [ -f "${archive_dir}/NOTICES.txt" ]; then
+        info "Installing NOTICES.txt into /usr/local/share/habitat"
+        mkdir -pv /usr/local/share/habitat
+        install -v "${archive_dir}/NOTICES.txt" /usr/local/share/habitat/NOTICES.txt
+    fi
+
+}
+
+install_hab_macos_aarch64() {
+    need_cmd mkdir
+    need_cmd sudo
+
+    local _origin=${1:-chef}
+    local _ident="${_origin}/hab"
+    if [ -n "${version-}" ] && [ "${version}" != "latest" ]; then
+      _ident+="/$version"
+    fi
+
+
+    # Just make sure that /usr/local/bin exists
+    sudo -E mkdir -pv /usr/local/bin
+
+    # If we have a 'hab' as a file in `/usr/local/bin` --binlink doesn't work,
+    # So we store it into a separate file first.
+    if test -f /usr/local/bin/hab; then
+        sudo -E mv -f /usr/local/bin/hab /usr/local/bin/.hab-orig
+	# Restore the file on interrupt, error or term (but not on legal exit).
+	# Since this trap will overwrite the 'INT' and 'TERM' logic make sure we do those
+	# things as well.
+	trap 'code=$?; sudo -E mv /usr/local/bin/.hab-orig /usr/local/bin/hab; \
+		rm -rf "$workdir"; exit $code;' ERR TERM INT
+    fi
+
+
+    if [ -n "${bldrUrl:-}" ]; then
+        info "Installing the habitat package from the builder: $bldrUrl, channel: $channel."
+        sudo -E "${archive_dir}/hab" pkg install --binlink --force --channel "$channel" "$_ident" -u "$bldrUrl"
+    else
+        info "Installing the habitat package from channel: $channel."
+        sudo -E "${archive_dir}/hab" pkg install --binlink --force --channel "$channel" "$_ident"
+    fi
+
+    if [ -L "/usr/local/bin/hab" ] && [ -e "/usr/local/bin/hab" ]; then
+        sudo -E rm -f /usr/local/bin/.hab-orig 2>/dev/null
+    else
+        # Something didn't work - restore the saved original hab
+        sudo -E mv -f /usr/local/bin/.hab-orig /usr/local/bin/hab 2>/dev/null
+        exit_with "Unable to determine that /usr/local/bin/hab is a symlink." 6
+    fi
+}
+
+
+install_hab() {
+  local _origin="${1:-chef}"
+
+  case "${sys}" in
+  darwin)
+    case "${arch}" in
+        x86_64)
+            install_hab_macos_stable
+            ;;
+        aarch64)
+            # Use the aarch64-native install path for versions > 2.0.504.
+            # When version is "latest", resolve the actual version from the
+            # already-downloaded manifest.json before comparing.
+            local _resolved_version="${version:-}"
+            if [ -z "$_resolved_version" ] || [ "$_resolved_version" = "latest" ]; then
+                _resolved_version="$(get_version_from_manifest)" || _resolved_version=""
+            fi
+            # Strip any version/release suffix (e.g. "2.0.504/20241020") so
+            # version_gt always receives a bare X.Y.Z string.
+            _resolved_version="${_resolved_version%%/*}"
+            if [ -n "$_resolved_version" ] && version_gt "$_resolved_version" "2.0.504"; then
+                install_hab_macos_aarch64 "$_origin"
+            else
+                install_hab_macos_stable
+            fi
+            ;;
+        *)
+            exit_with "Unrecognized arch when installing for ${sys}: ${arch}" 5
+            ;;
+    esac
+    ;;
+  linux)
+    local _ident="${_origin}/hab"
+
+    if [ -n "${version-}" ] && [ "${version}" != "latest" ]; then
+      _ident+="/$version"
+    fi
+
+    info "Installing Habitat package using temporarily downloaded hab"
+    # NOTE: For people (rightly) wondering why we download hab only to use it
+    # to install hab from Builder, the main reason is because it allows /bin/hab
+    # to be a binlink, meaning that future upgrades can be easily done via
+    # hab pkg install chef/hab -bf and everything will Just Work. If we put
+    # the hab we downloaded into /bin, then future hab upgrades done via hab
+    # itself won't work - you'd need to run this script every time you wanted
+    # to upgrade hab, which is not intuitive. Putting it into a place other than
+    # /bin means now you have multiple copies of hab on your system and pathing
+    # shenanigans might ensue. Rather than deal with that mess, we do it this
+    # way.
+    if [ -n "${bldrUrl:-}" ]; then
+        "${archive_dir}/hab" pkg install --binlink --force --channel "$channel" "$_ident" -u "$bldrUrl"
+    else
+        "${archive_dir}/hab" pkg install --binlink --force --channel "$channel" "$_ident"
+    fi
+    ;;
+  *)
+    exit_with "Unrecognized sys when installing: ${sys}" 5
+    ;;
+  esac
+}
+
+print_hab_version() {
+  need_cmd hab
+
+  info "Checking installed hab version"
+  hab --version
+}
+
+need_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    exit_with "Required command '$1' not found on PATH" 127
+  fi
+}
+
+info() {
+  echo "--> hab-install: $1"
+}
+
+warn() {
+  echo "xxx hab-install: $1" >&2
+}
+
+exit_with() {
+  warn "$1"
+  exit "${2:-10}"
+}
+
+_array_contains() {
+  local e
+  for e in "${@:2}"; do
+    if [[ "$e" == "$1" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+dl_file() {
+  local _url="${1}"
+  local _dst="${2}"
+  local _code
+  local _wget_extra_args=""
+  local _curl_extra_args=""
+
+  # Attempt to download with wget, if found. If successful, quick return
+  if command -v wget >/dev/null; then
+    info "Downloading via wget: ${_url}"
+
+    if [ -n "${SSL_CERT_FILE:-}" ]; then
+      wget ${_wget_extra_args:+"--ca-certificate=${SSL_CERT_FILE}"} -q -O "${_dst}" "${_url}"
+    else
+      wget -q -O "${_dst}" "${_url}"
+    fi
+
+    _code="$?"
+
+    if [ $_code -eq 0 ]; then
+      return 0
+    else
+      local _e="wget failed to download file, perhaps wget doesn't have"
+      _e="$_e SSL support and/or no CA certificates are present?"
+      warn "$_e"
+    fi
+  fi
+
+  # Attempt to download with curl, if found. If successful, quick return
+  if command -v curl >/dev/null; then
+    info "Downloading via curl: ${_url}"
+
+    if [ -n "${SSL_CERT_FILE:-}" ]; then
+      curl ${_curl_extra_args:+"--cacert ${SSL_CERT_FILE}"} -sSfL "${_url}" -o "${_dst}"
+    else
+      curl -sSfL "${_url}" -o "${_dst}"
+    fi
+
+    _code="$?"
+
+    if [ $_code -eq 0 ]; then
+      return 0
+    else
+      local _e="curl failed to download file, perhaps curl doesn't have"
+      _e="$_e SSL support and/or no CA certificates are present?"
+      warn "$_e"
+    fi
+  fi
+
+  # If we reach this point, wget and curl have failed and we're out of options
+  exit_with "Required: SSL-enabled 'curl' or 'wget' on PATH with" 6
+}
+
+# Extract the hab package version from manifest.json.
+# Returns the version string (e.g. "2.1.1"), or empty string on failure.
+get_version_from_manifest() {
+  grep -o '"[^"]*/hab/[0-9][^"]*"' "$manifest_file" 2>/dev/null \
+    | head -1 \
+    | sed 's|^"[^/]*/hab/\([^/]*\)/[^"]*"$|\1|'
+}
+
+# Returns 0 (true) if version $1 is strictly greater than version $2.
+# Versions must be in X.Y.Z format. Returns 1 (false) for any input that
+# contains non-numeric segments rather than erroring under set -e.
+version_gt() {
+  local IFS=.
+  # Word-split on IFS=. to populate the arrays; must be unquoted.
+  # shellcheck disable=SC2206
+  local -a ver1=($1) ver2=($2)
+  local i
+  for ((i = 0; i < 3; i++)); do
+    local v1=${ver1[i]:-0}
+    local v2=${ver2[i]:-0}
+    # Treat any non-numeric segment as invalid input; return false safely.
+    [[ "$v1" =~ ^[0-9]+$ ]] || return 1
+    [[ "$v2" =~ ^[0-9]+$ ]] || return 1
+    if ((v1 > v2)); then return 0; fi
+    if ((v1 < v2)); then return 1; fi
+  done
+  return 1  # equal is not greater
+}
+
+get_origin_from_manifest() {
+  local origin="chef"  # Default fallback
+
+  # Use basic text processing to extract origin from package identifiers
+  # Look for package identifiers and extract the origin (first part before /)
+  # Package identifiers are in format: origin/name/version/release
+  origin=$(grep -o '"[^"]*\/[^"]*\/[^"]*\/[^"]*"' "$manifest_file" 2>/dev/null | \
+            head -1 | \
+            sed 's/^"\([^/]*\)\/.*$/\1/' 2>/dev/null)
+
+  # Validate that we got a non-empty origin
+  if [ -z "$origin" ] || [ "$origin" = "null" ]; then
+    origin="chef"
+  fi
+
+  echo "$origin"
+}
+
+main "$@" || exit 99

@@ -1,0 +1,111 @@
+use clap::Parser;
+
+use habitat_common::{cli::clap_validators::{HabPackageInstallSourceValueParser,
+                                            UrlValueParser},
+                     consts::{DEFAULT_BUILDER_URL,
+                              DEFAULT_HAB_PKG_IDENT}};
+
+#[cfg(not(all(any(target_os = "macos", target_os = "windows"),
+                  target_arch = "aarch64")))]
+use habitat_common::consts::{DEFAULT_HAB_LAUNCHER_PKG_IDENT,
+                             DEFAULT_HAB_SUP_PKG_IDENT};
+#[derive(Debug, Clone, Parser)]
+#[command(
+    name = "hab-pkg-export-tar",
+    author = concat!("\nAuthors: ", clap::crate_authors!()),
+    about = "Creates a tar package from a Habitat package",
+    version = crate::VERSION,
+    help_template = "{name} {version} {author-section} {about-section} \
+                    \n{usage-heading} {usage}\n\n{all-args}",
+    max_term_width = 100)]
+pub(crate) struct Cli {
+    /// Habitat CLI package identifier (ex: chef/hab) or filepath to a Habitat artifact
+    /// (ex: /home/chef-hab-2.0.100-20250416101002-x86_64-linux.hart) to install
+    #[arg(name = "HAB_PKG",
+          long = "hab-pkg",
+          value_name = "HAB_PKG",
+          value_parser = HabPackageInstallSourceValueParser,
+          default_value = DEFAULT_HAB_PKG_IDENT)]
+    pub(crate) hab_pkg: String,
+
+    /// Launcher package identifier (ex: chef/hab-launcher) or filepath to a Habitat artifact
+    /// (ex: /home/chef-hab-launcher-19633-20250610094807-x86_64-linux.hart) to install
+    #[cfg(not(all(any(target_os = "macos", target_os = "windows"),
+                  target_arch = "aarch64")))]
+    #[arg(name = "HAB_LAUNCHER_PKG",
+          long = "launcher-pkg",
+          value_name = "HAB_LAUNCHER_PKG",
+          value_parser = HabPackageInstallSourceValueParser,
+          default_value = DEFAULT_HAB_LAUNCHER_PKG_IDENT)]
+    pub(crate) hab_launcher_pkg: String,
+
+    /// Supervisor package identifier (ex: chef/hab-sup) or filepath to a Habitat artifact
+    /// (ex: /home/chef-hab-sup-2.0.134-20250610093735-x86_64-linux.hart) to install
+    #[cfg(not(all(any(target_os = "macos", target_os = "windows"),
+                  target_arch = "aarch64")))]
+    #[arg(name = "HAB_SUP_PKG",
+          long = "sup-pkg",
+          value_name = "HAB_SUP_PKG",
+          value_parser = HabPackageInstallSourceValueParser,
+          default_value = DEFAULT_HAB_SUP_PKG_IDENT)]
+    pub(crate) hab_sup_pkg: String,
+
+    /// Builder URL to Install packages from
+    #[arg(name = "BLDR_URL",
+          long = "url",
+          short = 'u',
+          value_name = "BLDR_URL",
+          value_parser = UrlValueParser,
+          default_value = DEFAULT_BUILDER_URL)]
+    pub(crate) bldr_url: String,
+
+    /// Channel to install packages from
+    #[arg(name = "CHANNEL",
+          long = "channel",
+          short = 'c',
+          value_name = "CHANNEL",
+          default_value = "base")]
+    pub(crate) channel: String,
+
+    /// URL to install base packages from
+    #[arg(name = "BASE_PKGS_BLDR_URL",
+          long = "base-pkgs-url",
+          value_name = "BASE_PKGS_BLDR_URL",
+          value_parser = UrlValueParser,
+          default_value = DEFAULT_BUILDER_URL)]
+    pub(crate) base_pkgs_url: String,
+
+    /// Channel to install base packages from
+    #[arg(name = "BASE_PKGS_CHANNEL",
+          long = "base-pkgs-channel",
+          value_name = "BASE_PKGS_CHANNEL",
+          default_value = "base")]
+    pub(crate) base_pkgs_channel: String,
+
+    /// Provide a Builder auth token for private pkg export
+    #[arg(name = "BLDR_AUTH_TOKEN",
+          long = "auth",
+          short = 'z',
+          value_name = "BLDR_AUTH_TOKEN",
+          hide_env_values = true,
+          env = "HAB_AUTH_TOKEN")]
+    pub(crate) bldr_auth_token: Option<String>,
+
+    /// Exclude the hab bin directory from the exported tar
+    #[arg(name = "NO_HAB_BIN", long = "no-hab-bin")]
+    pub(crate) no_hab_bin: bool,
+
+    /// Exclude supervisor and launcher packages from the exported tar
+    #[cfg(not(all(any(target_os = "macos", target_os = "windows"),
+                  target_arch = "aarch64")))]
+    #[arg(name = "NO_HAB_SUP", long = "no-hab-sup")]
+    pub(crate) no_hab_sup: bool,
+
+    /// A Habitat package identifier (ex: acme/redis) and/or filepath to a Habitat artifact
+    /// (ex: /home/acme-redis-3.0.7-21120102031201-x86_64-linux.hart)
+    #[arg(name = "PKG_IDENT_OR_ARTIFACT",
+          value_name = "PKG_IDENT_OR_ARTIFACT",
+          value_parser = HabPackageInstallSourceValueParser,
+          required = true)]
+    pub(crate) pkg_ident: String,
+}
